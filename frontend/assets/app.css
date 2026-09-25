@@ -227,6 +227,18 @@ code.inline { font-family: var(--mono); background: var(--surface-2); padding: 1
   display: flex; align-items: center; gap: 8px;
 }
 
+/* ---------- 多语言题面 ---------- */
+.lang-switch {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.notice-banner {
+  background: var(--yellow-bg); color: var(--yellow); border: 1px solid #f0e0a0;
+  padding: 10px 16px; border-radius: 8px; margin-bottom: 16px;
+  font-size: 13px; line-height: 1.6;
+}
+.notice-banner .muted { color: var(--text-muted); }
+
 /* ---------- 倒计时 ---------- */
 .countdown { font-family: var(--mono); font-size: 22px; font-weight: 700; letter-spacing: 1px; }
 .countdown small { font-size: 12px; color: var(--text-muted); font-weight: 400; letter-spacing: 0; }

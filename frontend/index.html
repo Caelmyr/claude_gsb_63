@@ -162,12 +162,114 @@
           <div class="form-group"><label>浮点误差限（float 模式）</label><input id="f_tol" type="number" step="0.000001" value="${comp.float_tolerance ?? 1e-6}"></div>
         </div>
         <div class="card-title">测试用例 <button class="btn btn-outline btn-sm" onclick="addCaseRow()">＋ 添加</button></div>
-        <div id="caseList">${caseRows}</div>`;
+        <div id="caseList">${caseRows}</div>
+        <div class="card-title mt-16">多语言题面
+          ${id ? `<button class="btn btn-outline btn-sm" onclick="openTranslationForm('${OJ.esc(id)}')">＋ 添加语言版本</button>` : ""}
+        </div>
+        ${id
+          ? `<div id="translationList" class="mb-16"><span class="muted">加载中…</span></div>`
+          : `<div class="hint mb-16">默认题面为中文；保存题目后可在此添加英文等其它语言版本。</div>`}`;
       const mask = OJ.openModal(id ? "编辑题目" : "新建题目", body);
       mask.querySelector(".modal").style.maxWidth = "860px";
       mask.querySelector(".modal-actions").innerHTML = `
         <button class="btn btn-outline" onclick="this.closest('.modal-mask').remove()">取消</button>
         <button class="btn btn-primary" onclick="saveProblem('${id || ""}')">保存</button>`;
+      if (id) loadTranslations(id);
+    }
+
+    // ---------- 管理员：多语言题面 ----------
+    async function loadTranslations(pid) {
+      const box = OJ.el("translationList");
+      if (!box) return;
+      try {
+        const d = await OJ.api("/problems/" + pid + "/translations");
+        const codes = Object.keys(d.translations || {}).sort();
+        if (!codes.length) {
+          box.innerHTML = '<span class="muted">暂无其它语言版本，题面默认显示中文。</span>';
+          return;
+        }
+        box.innerHTML = codes.map(code => {
+          const tr = d.translations[code] || {};
+          return `<div class="flex-between card" style="padding:10px 14px;margin-bottom:8px">
+            <div>
+              <span class="tag">${OJ.esc(code)}</span>
+              <b>${OJ.esc(tr.title || "")}</b>
+              <span class="muted" style="font-size:12px;margin-left:8px">${OJ.esc((tr.description || "").slice(0, 40))}</span>
+            </div>
+            <div class="flex gap-8">
+              <button class="btn btn-outline btn-sm" onclick="openTranslationForm('${OJ.esc(pid)}','${OJ.esc(code)}')">编辑</button>
+              <button class="btn btn-danger btn-sm" onclick="removeTranslation('${OJ.esc(pid)}','${OJ.esc(code)}')">删除</button>
+            </div>
+          </div>`;
+        }).join("");
+      } catch (e) { box.innerHTML = `<span class="muted">${OJ.esc(e.message)}</span>`; }
+    }
+
+    async function openTranslationForm(pid, lang) {
+      let tr = {};
+      if (lang) {
+        try {
+          const d = await OJ.api("/problems/" + pid + "/translations");
+          tr = (d.translations || {})[lang] || {};
+        } catch (e) { OJ.toast(e.message, "error"); return; }
+      }
+      const body = `
+        <div class="form-group">
+          <label>语言代码</label>
+          <input id="t_lang" value="${OJ.esc(lang || "")}" placeholder="如 en、ja、zh-tw" ${lang ? "disabled" : ""}>
+          <div class="hint">中文为默认题面，无需在此录入；此处只维护其它语言版本。</div>
+        </div>
+        <div class="form-group"><label>标题</label><input id="t_title" value="${OJ.esc(tr.title || "")}"></div>
+        <div class="form-group"><label>题目描述</label><textarea id="t_desc" rows="3">${OJ.esc(tr.description || "")}</textarea></div>
+        <div class="form-row">
+          <div class="form-group"><label>输入描述</label><textarea id="t_in" rows="2">${OJ.esc(tr.input_description || "")}</textarea></div>
+          <div class="form-group"><label>输出描述</label><textarea id="t_out" rows="2">${OJ.esc(tr.output_description || "")}</textarea></div>
+        </div>
+        <div class="form-group"><label>提示</label><textarea id="t_hint" rows="2">${OJ.esc(tr.hint || "")}</textarea></div>
+        <div class="form-group">
+          <label>样例（JSON，留空则沿用中文样例）</label>
+          <textarea id="t_samples" rows="3" placeholder='[{"input":"1 2","output":"3"}]'>${tr.samples ? OJ.esc(JSON.stringify(tr.samples, null, 2)) : ""}</textarea>
+        </div>
+        <div class="hint">未填写的字段将自动回退显示中文内容。</div>`;
+      const mask = OJ.openModal(lang ? `编辑语言版本：${lang}` : "添加语言版本", body);
+      mask.querySelector(".modal-actions").innerHTML = `
+        <button class="btn btn-outline" onclick="this.closest('.modal-mask').remove()">取消</button>
+        <button class="btn btn-primary" onclick="saveTranslation('${OJ.esc(pid)}','${OJ.esc(lang || "")}')">保存</button>`;
+    }
+
+    async function saveTranslation(pid, lang) {
+      const code = (lang || OJ.el("t_lang").value).trim().toLowerCase();
+      if (!code) { OJ.toast("请填写语言代码", "error"); return; }
+      let samples = null;
+      const raw = OJ.el("t_samples").value.trim();
+      if (raw) {
+        try { samples = JSON.parse(raw); }
+        catch (e) { OJ.toast("样例 JSON 格式不正确", "error"); return; }
+        if (!Array.isArray(samples)) { OJ.toast("样例必须是数组", "error"); return; }
+      }
+      const body = {
+        title: OJ.el("t_title").value,
+        description: OJ.el("t_desc").value,
+        input_description: OJ.el("t_in").value,
+        output_description: OJ.el("t_out").value,
+        hint: OJ.el("t_hint").value,
+      };
+      if (samples !== null) body.samples = samples;
+      try {
+        await OJ.api("/problems/" + pid + "/translations/" + encodeURIComponent(code), { method: "PUT", body });
+        OJ.toast("语言版本已保存", "success");
+        document.querySelectorAll(".modal-mask").forEach(m => { if (m.querySelector("#t_lang")) m.remove(); });
+        loadTranslations(pid);
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    async function removeTranslation(pid, lang) {
+      if (!await OJ.confirmDialog(`确定删除 ${pid} 的「${lang}」语言版本？中文题面不受影响。`)) return;
+      try {
+        await OJ.api("/problems/" + pid + "/translations/" + encodeURIComponent(lang), { method: "DELETE" });
+        OJ.toast("已删除", "success");
+        loadTranslations(pid);
+      } catch (e) { OJ.toast(e.message, "error"); }
     }
 
     function addCaseRow() {

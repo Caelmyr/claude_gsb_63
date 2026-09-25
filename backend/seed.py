@@ -56,6 +56,15 @@ def seed():
         "time_limit_ms": 1000, "memory_limit_kb": 65536,
         "languages": ["python", "cpp", "c", "java"], "points": 100,
         "comparison": {"mode": "exact", "ignore_whitespace": True},
+        "translations": {
+            "en": {
+                "title": "A+B Problem",
+                "description": "Given two integers A and B, print their sum.",
+                "input_description": "One line with two integers A and B (absolute values not exceeding 10^9).",
+                "output_description": "One integer: the sum of A and B.",
+                "hint": "Watch out for the integer range.",
+            },
+        },
         "created_at": now_iso(), "updated_at": now_iso(),
     })
 
@@ -179,6 +188,15 @@ main()
         "time_limit_ms": 1000, "memory_limit_kb": 65536,
         "languages": ["python", "cpp", "c", "java"], "points": 100,
         "comparison": {"mode": "exact", "ignore_whitespace": True},
+        "translations": {
+            "en": {
+                "title": "String Reversal",
+                "description": "Given a string consisting of lowercase letters only, print its reversal.",
+                "input_description": "One line with a single string (length not exceeding 10^5).",
+                "output_description": "One line: the reversed string.",
+                "hint": "Use slicing s[::-1] or two pointers.",
+            },
+        },
         "created_at": now_iso(), "updated_at": now_iso(),
     })
 

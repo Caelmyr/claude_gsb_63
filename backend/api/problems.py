@@ -1,18 +1,34 @@
 """题目与测试用例管理 API。"""
 import os
+import re
 
 from flask import Blueprint, request
 
 from backend import config
 from backend.api import ok, err, require_auth, require_admin
-from backend.storage import read_json, atomic_write_json, list_files
+from backend.storage import read_json, atomic_write_json, list_files, locked_update
 from backend.utils import now_iso, gen_id, sort_list
 
 problems_bp = Blueprint("problems", __name__)
 
+# ---- 多语言题面 ----
+# 默认题面（中文）始终存放在题目顶层字段；其它语言版本存放在
+# translations: {<lang>: {title, description, input_description,
+#                          output_description, samples, hint}}
+# 增删语言版本只动 translations，不触碰中文字段。
+DEFAULT_LANG = "zh"
+TRANSLATABLE_FIELDS = ("title", "description", "input_description",
+                       "output_description", "samples", "hint")
+RESERVED_LANGS = {"zh", "cn", "default"}
+LANG_CODE_RE = re.compile(r"^[a-z]{2,3}(-[a-z0-9]{2,8})?$")
+
 
 def _testcases_path(problem_id):
     return os.path.join(config.TESTCASES_DIR, f"{problem_id}.json")
+
+
+def _problem_path(problem_id):
+    return os.path.join(config.PROBLEMS_DIR, f"{problem_id}.json")
 
 
 def load_testcases(problem_id):
@@ -20,13 +36,70 @@ def load_testcases(problem_id):
     return (data or {}).get("cases", []) if data else []
 
 
+def _non_empty(v):
+    if v is None:
+        return False
+    if isinstance(v, str):
+        return bool(v.strip())
+    if isinstance(v, (list, dict)):
+        return bool(v)
+    return True
+
+
+def _available_languages(p):
+    """题目实际可用的题面语言：默认中文 + 已录入且内容非空的翻译版本。"""
+    langs = [DEFAULT_LANG]
+    translations = p.get("translations")
+    if isinstance(translations, dict):
+        for code in sorted(translations):
+            tr = translations[code]
+            if isinstance(tr, dict) and any(_non_empty(tr.get(f))
+                                            for f in TRANSLATABLE_FIELDS):
+                langs.append(code)
+    return langs
+
+
 def _problem_summary(p, include_samples=True):
     if not p:
         return None
-    out = {k: v for k, v in p.items()}
+    # 列表/详情通用摘要：不下发原始 translations，只给可用语言列表
+    out = {k: v for k, v in p.items() if k != "translations"}
     out["testcase_count"] = len(load_testcases(p.get("id")))
     if not include_samples:
         out.pop("samples", None)
+    out["available_languages"] = _available_languages(p)
+    return out
+
+
+def _localized_problem(p, lang):
+    """按语言解析题面：逐字段回退到默认中文，保证不返回空白/残缺内容。
+
+    返回的 dict 附带语言元信息：
+      lang            实际采用的语言
+      requested_lang  用户请求的语言
+      lang_fallback   请求的语言整包缺失，已整体回退中文
+      lang_partial    语言版本存在但个别字段缺失，这些字段已用中文补齐
+    """
+    out = _problem_summary(p, include_samples=True)
+    requested = (lang or DEFAULT_LANG).strip().lower() or DEFAULT_LANG
+    applied, fallback, partial = DEFAULT_LANG, False, False
+    if requested != DEFAULT_LANG:
+        translations = p.get("translations")
+        tr = translations.get(requested) if isinstance(translations, dict) else None
+        if isinstance(tr, dict) and requested in out["available_languages"]:
+            applied = requested
+            for f in TRANSLATABLE_FIELDS:
+                v = tr.get(f)
+                if _non_empty(v):
+                    out[f] = v
+                elif _non_empty(out.get(f)):
+                    partial = True
+        else:
+            fallback = True
+    out["lang"] = applied
+    out["requested_lang"] = requested
+    out["lang_fallback"] = fallback
+    out["lang_partial"] = partial
     return out
 
 
@@ -67,10 +140,11 @@ def list_tags():
 
 @problems_bp.get("/problems/<problem_id>")
 def get_problem(problem_id):
-    p = read_json(os.path.join(config.PROBLEMS_DIR, f"{problem_id}.json"))
+    p = read_json(_problem_path(problem_id))
     if not p:
         return err("题目不存在", 404)
-    return ok(_problem_summary(p, include_samples=True))
+    lang = request.args.get("lang", DEFAULT_LANG)
+    return ok(_localized_problem(p, lang))
 
 
 @problems_bp.post("/problems")
@@ -179,3 +253,128 @@ def set_testcases(problem_id):
     data = request.get_json(silent=True) or {}
     _save_testcases(problem_id, data.get("cases", []))
     return ok({"problem_id": problem_id, "count": len(data.get("cases", []))})
+
+
+# ---- 多语言题面管理（管理员） ----
+
+class _AbortUpdate(Exception):
+    """在 locked_update 的 update_fn 中抛出以中止写入并返回错误。"""
+
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def _normalize_translation(data):
+    """校验并规范化一个语言版本，返回 (translation, error)。"""
+    tr = {}
+    for f in ("title", "description", "input_description",
+              "output_description", "hint"):
+        v = data.get(f)
+        if v is None:
+            continue
+        if not isinstance(v, str):
+            return None, f"字段 {f} 必须是字符串"
+        tr[f] = v
+    if "samples" in data and data["samples"] is not None:
+        samples = data["samples"]
+        if not isinstance(samples, list):
+            return None, "samples 必须是数组"
+        norm = []
+        for s in samples:
+            if not isinstance(s, dict):
+                return None, "samples 元素必须是 {input, output} 对象"
+            norm.append({"input": str(s.get("input", "")),
+                         "output": str(s.get("output", ""))})
+        tr["samples"] = norm
+    if not any(_non_empty(v) for v in tr.values()):
+        return None, "语言版本内容不能为空"
+    return tr, None
+
+
+def _check_lang_code(lang):
+    """返回 (code, error_response)；合法时 error_response 为 None。"""
+    code = (lang or "").strip().lower()
+    if code in RESERVED_LANGS:
+        return None, err("中文为默认题面，请直接编辑题目正文", 400)
+    if not LANG_CODE_RE.match(code):
+        return None, err("语言代码格式不正确（如 en、ja、zh-tw）", 400)
+    return code, None
+
+
+@problems_bp.get("/problems/<problem_id>/translations")
+@require_admin
+def list_translations(problem_id):
+    p = read_json(_problem_path(problem_id))
+    if not p:
+        return err("题目不存在", 404)
+    translations = p.get("translations")
+    if not isinstance(translations, dict):
+        translations = {}
+    return ok({"problem_id": problem_id,
+               "translations": translations,
+               "available_languages": _available_languages(p)})
+
+
+@problems_bp.put("/problems/<problem_id>/translations/<lang>")
+@require_admin
+def upsert_translation(problem_id, lang):
+    """新增/覆盖一个语言版本；只写 translations[lang]，不动中文题面。"""
+    code, error = _check_lang_code(lang)
+    if error:
+        return error
+    if not os.path.exists(_problem_path(problem_id)):
+        return err("题目不存在", 404)
+    data = request.get_json(silent=True) or {}
+    tr, error = _normalize_translation(data)
+    if error:
+        return err(error, 400)
+
+    def _update(p):
+        if p is None:
+            raise _AbortUpdate("题目不存在", 404)
+        translations = p.get("translations")
+        if not isinstance(translations, dict):
+            translations = {}
+        translations[code] = tr
+        p["translations"] = translations
+        p["updated_at"] = now_iso()
+        return p
+
+    try:
+        updated = locked_update(_problem_path(problem_id), _update)
+    except _AbortUpdate as e:
+        return err(e.message, e.status)
+    return ok(_localized_problem(updated, code))
+
+
+@problems_bp.delete("/problems/<problem_id>/translations/<lang>")
+@require_admin
+def delete_translation(problem_id, lang):
+    """删除一个语言版本；中文题面与题目其它字段不受影响。"""
+    code, error = _check_lang_code(lang)
+    if error:
+        return error
+    if not os.path.exists(_problem_path(problem_id)):
+        return err("题目不存在", 404)
+
+    def _update(p):
+        if p is None:
+            raise _AbortUpdate("题目不存在", 404)
+        translations = p.get("translations")
+        if not isinstance(translations, dict) or code not in translations:
+            raise _AbortUpdate("该语言版本不存在", 404)
+        translations.pop(code, None)
+        if translations:
+            p["translations"] = translations
+        else:
+            p.pop("translations", None)
+        p["updated_at"] = now_iso()
+        return p
+
+    try:
+        locked_update(_problem_path(problem_id), _update)
+    except _AbortUpdate as e:
+        return err(e.message, e.status)
+    return ok()

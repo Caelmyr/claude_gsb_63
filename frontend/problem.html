@@ -16,7 +16,16 @@
   <script src="/assets/app.js"></script>
   <script>
     OJ.boot("index");
-    const pid = new URLSearchParams(location.search).get("id");
+    const params = new URLSearchParams(location.search);
+    const pid = params.get("id");
+
+    // 题面语言：URL 参数优先，其次本地记忆，默认中文
+    const LANG_NAMES = {
+      zh: "中文", en: "English", ja: "日本語", ko: "한국어",
+      fr: "Français", de: "Deutsch", ru: "Русский", es: "Español", pt: "Português",
+    };
+    const langName = (code) => LANG_NAMES[code] || code;
+    let curLang = params.get("lang") || localStorage.getItem("oj_prob_lang") || "zh";
 
     function renderMarkdownish(text) {
       // 简单段落化：空行分段，保留行内 code
@@ -26,62 +35,102 @@
       return paras;
     }
 
+    function switchLang(code) {
+      curLang = code;
+      localStorage.setItem("oj_prob_lang", code);
+      const q = new URLSearchParams(location.search);
+      q.set("lang", code);
+      history.replaceState(null, "", "?" + q.toString());
+      load();
+    }
+
+    function render(p) {
+      const box = OJ.el("problemBody");
+      const langs = p.available_languages && p.available_languages.length ? p.available_languages : ["zh"];
+      // 语言切换器：仅列出该题已有的语言版本
+      const switcher = `
+        <div class="lang-switch">
+          <span class="muted" style="font-size:13px">🌐 题面语言</span>
+          ${langs.map(code => `
+            <button class="btn btn-sm ${code === p.lang ? "btn-primary" : "btn-outline"}"
+                    onclick="switchLang('${OJ.esc(code)}')">${OJ.esc(langName(code))}</button>`).join("")}
+        </div>`;
+      // 回退提示：请求的语言不存在时整体回退中文（双语提示，照顾海外用户）
+      const fallbackBanner = p.lang_fallback ? `
+        <div class="notice-banner">
+          ⚠️ 该题目暂未提供「${OJ.esc(langName(p.requested_lang))}」题面，已显示默认中文。<br>
+          <span class="muted">This problem is not yet available in "${OJ.esc(langName(p.requested_lang))}". The default Chinese statement is shown.</span>
+        </div>` : "";
+      // 部分字段缺失提示
+      const partialBanner = (!p.lang_fallback && p.lang_partial) ? `
+        <div class="notice-banner">
+          ℹ️ 部分内容暂无「${OJ.esc(langName(p.lang))}」版本，相应字段已用中文补齐。<br>
+          <span class="muted">Some sections are not yet translated into "${OJ.esc(langName(p.lang))}"; Chinese is shown for those fields.</span>
+        </div>` : "";
+
+      const samples = (p.samples || []).map((s, i) => `
+        <div class="form-group">
+          <label>样例 ${i + 1}</label>
+          <pre class="code light">${OJ.esc(s.input)}</pre>
+          <label class="mt-8">输出</label>
+          <pre class="code light">${OJ.esc(s.output)}</pre>
+        </div>`).join("");
+
+      box.innerHTML = `
+        <div class="page-head">
+          <div>
+            <h1>${OJ.esc(p.title)} ${OJ.difficultyLabel(p.difficulty)}</h1>
+            <div class="sub">
+              时间限制 <b>${p.time_limit_ms} ms</b> · 内存限制 <b>${Math.round(p.memory_limit_kb / 1024)} MB</b> · 分值 <b>${p.points}</b>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-lg" onclick="location.href='/editor.html?id=${OJ.esc(p.id)}'">✏️ 提交代码</button>
+        </div>
+
+        ${switcher}
+        ${fallbackBanner}
+        ${partialBanner}
+
+        <div class="card">
+          <div class="card-title">题目描述</div>
+          ${renderMarkdownish(p.description)}
+        </div>
+
+        <div class="card">
+          <div class="card-title">输入描述</div>
+          ${renderMarkdownish(p.input_description)}
+        </div>
+
+        <div class="card">
+          <div class="card-title">输出描述</div>
+          ${renderMarkdownish(p.output_description)}
+        </div>
+
+        <div class="card">
+          <div class="card-title">样例</div>
+          ${samples}
+        </div>
+
+        ${p.hint ? `<div class="card"><div class="card-title">提示</div>${renderMarkdownish(p.hint)}</div>` : ""}
+
+        <div class="card">
+          <div class="card-title">标签</div>
+          <div>${(p.tags || []).map(t => `<span class="tag">${OJ.esc(t)}</span>`).join("")}</div>
+        </div>
+
+        <div class="flex gap-8 wrap">
+          <button class="btn btn-outline" onclick="history.back()">← 返回列表</button>
+          <a class="btn btn-outline" href="/forum.html?problem_id=${OJ.esc(p.id)}">💬 讨论该题</a>
+        </div>`;
+    }
+
     async function load() {
       if (!pid) { OJ.el("problemBody").innerHTML = '<div class="empty">缺少题目参数</div>'; return; }
       const box = OJ.el("problemBody");
       box.innerHTML = '<div class="empty"><span class="spinner"></span> 加载题目…</div>';
       try {
-        const p = await OJ.api("/problems/" + pid);
-        const samples = (p.samples || []).map((s, i) => `
-          <div class="form-group">
-            <label>样例 ${i + 1}</label>
-            <pre class="code light">${OJ.esc(s.input)}</pre>
-            <label class="mt-8">输出</label>
-            <pre class="code light">${OJ.esc(s.output)}</pre>
-          </div>`).join("");
-
-        box.innerHTML = `
-          <div class="page-head">
-            <div>
-              <h1>${OJ.esc(p.title)} ${OJ.difficultyLabel(p.difficulty)}</h1>
-              <div class="sub">
-                时间限制 <b>${p.time_limit_ms} ms</b> · 内存限制 <b>${Math.round(p.memory_limit_kb / 1024)} MB</b> · 分值 <b>${p.points}</b>
-              </div>
-            </div>
-            <button class="btn btn-primary btn-lg" onclick="location.href='/editor.html?id=${OJ.esc(p.id)}'">✏️ 提交代码</button>
-          </div>
-
-          <div class="card">
-            <div class="card-title">题目描述</div>
-            ${renderMarkdownish(p.description)}
-          </div>
-
-          <div class="card">
-            <div class="card-title">输入描述</div>
-            ${renderMarkdownish(p.input_description)}
-          </div>
-
-          <div class="card">
-            <div class="card-title">输出描述</div>
-            ${renderMarkdownish(p.output_description)}
-          </div>
-
-          <div class="card">
-            <div class="card-title">样例</div>
-            ${samples}
-          </div>
-
-          ${p.hint ? `<div class="card"><div class="card-title">提示</div>${renderMarkdownish(p.hint)}</div>` : ""}
-
-          <div class="card">
-            <div class="card-title">标签</div>
-            <div>${(p.tags || []).map(t => `<span class="tag">${OJ.esc(t)}</span>`).join("")}</div>
-          </div>
-
-          <div class="flex gap-8 wrap">
-            <button class="btn btn-outline" onclick="history.back()">← 返回列表</button>
-            <a class="btn btn-outline" href="/forum.html?problem_id=${OJ.esc(p.id)}">💬 讨论该题</a>
-          </div>`;
+        const p = await OJ.api("/problems/" + pid + "?lang=" + encodeURIComponent(curLang));
+        render(p);
       } catch (e) {
         box.innerHTML = `<div class="empty">${OJ.esc(e.message)}</div>`;
       }

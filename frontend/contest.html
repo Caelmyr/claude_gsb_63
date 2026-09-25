@@ -32,11 +32,18 @@
 
     async function load() {
       const box = OJ.el("contestList");
+      await loadProblems();
       try {
         const data = await OJ.api("/contests");
         if (!data.items.length) { box.innerHTML = `<div class="card"><div class="empty">暂无竞赛</div></div>`; return; }
         box.innerHTML = data.items.map(c => {
           const [stLabel, stCls] = STATUS[c.status] || ["", ""];
+          const probLinks = (c.problems || []).map((cp, i) => {
+            const p = problemsCache.find(x => x.id === cp.problem_id);
+            const title = p ? p.title : cp.problem_id;
+            return `<a class="tag" href="/problem.html?id=${OJ.esc(cp.problem_id)}&contest=${OJ.esc(c.id)}"
+                       title="${OJ.esc(cp.problem_id)}">${String.fromCharCode(65 + i)}. ${OJ.esc(title)}</a>`;
+          }).join("");
           return `
           <div class="card">
             <div class="flex-between wrap">
@@ -48,6 +55,7 @@
                   ${c.freeze_enabled ? " · 封榜 " + OJ.fmtTime(c.freeze_time) : ""}
                 </div>
                 ${c.description ? `<div class="muted mt-8" style="font-size:13px">${OJ.esc(c.description)}</div>` : ""}
+                ${probLinks ? `<div class="mt-8">${probLinks}</div>` : ""}
               </div>
               <div class="text-right">
                 <div id="cd-${c.id}" class="countdown"></div>
