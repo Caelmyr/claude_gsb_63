@@ -276,3 +276,20 @@ code.inline { font-family: var(--mono); background: var(--surface-2); padding: 1
 .flex { display: flex; } .flex-between { display: flex; justify-content: space-between; align-items: center; }
 .gap-8 { gap: 8px; } .gap-12 { gap: 12px; } .wrap { flex-wrap: wrap; }
 .ml-auto { margin-left: auto; }
+
+/* ---------- 多语言题面 ---------- */
+.lang-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.lang-bar .lang-label { color: var(--text-muted); font-size: 13px; }
+.lang-switch { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.lang-switch button {
+  border: 1px solid var(--border); background: var(--surface); color: var(--text-muted);
+  border-radius: 999px; padding: 3px 12px; font-size: 12px; cursor: pointer; line-height: 1.6;
+}
+.lang-switch button:hover { border-color: var(--primary); color: var(--primary); }
+.lang-switch button.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.lang-notice {
+  border: 1px solid var(--yellow); background: var(--yellow-bg); color: #8a6508;
+  border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
+  display: flex; align-items: center; gap: 8px;
+}
+.lang-notice .lang-link { color: var(--primary); cursor: pointer; text-decoration: underline; }

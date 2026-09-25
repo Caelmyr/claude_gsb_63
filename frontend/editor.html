@@ -146,6 +146,9 @@
         const runnable = data.items.filter(c => c.status === "running");
         sel.innerHTML = '<option value="">练习模式（不计排名）</option>' +
           runnable.map(c => `<option value="${OJ_.esc(c.id)}">${OJ_.esc(c.title)}</option>`).join("");
+        // 从竞赛题面页跳来：自动选中对应竞赛
+        const cid = new URLSearchParams(location.search).get("c");
+        if (cid && runnable.some(c => c.id === cid)) sel.value = cid;
       } catch (e) {}
     }
 
@@ -153,11 +156,17 @@
       const pid = document.getElementById("problemSelect").value;
       if (!pid) return;
       try {
-        const p = await OJ_.api("/problems/" + pid);
+        // 按用户选择的题面语言拉取标题（竞赛内同样支持切换）
+        let lang = "zh";
+        try { lang = localStorage.getItem("oj_problem_lang") || "zh"; } catch (e) {}
+        const p = await OJ_.api("/problems/" + pid + "?lang=" + encodeURIComponent(lang));
         document.getElementById("problemTitle").textContent = p.title;
         document.getElementById("problemHint").textContent =
           `时限 ${p.time_limit_ms}ms · 内存 ${Math.round(p.memory_limit_kb / 1024)}MB · ${p.points} 分`;
-        document.getElementById("backLink").href = "/problem.html?id=" + pid;
+        const cid = new URLSearchParams(location.search).get("c");
+        document.getElementById("backLink").href =
+          "/problem.html?id=" + pid + (cid ? "&c=" + encodeURIComponent(cid) : "")
+          + (lang !== "zh" ? "&lang=" + encodeURIComponent(lang) : "");
       } catch (e) {}
     }
 

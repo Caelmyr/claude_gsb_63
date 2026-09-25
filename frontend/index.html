@@ -109,6 +109,7 @@
             <td class="text-right">
               <a class="btn btn-outline btn-sm" href="/problem.html?id=${OJ.esc(p.id)}">查看</a>
               ${admin ? `<button class="btn btn-outline btn-sm" onclick="openProblemForm('${OJ.esc(p.id)}')">编辑</button>
+                         <button class="btn btn-outline btn-sm" title="多语言题面" onclick="openTranslationForm('${OJ.esc(p.id)}')">🌐 多语言</button>
                          <button class="btn btn-danger btn-sm" onclick="deleteProblem('${OJ.esc(p.id)}')">删除</button>` : ""}
             </td>
           </tr>`).join("");
@@ -210,6 +211,171 @@
         OJ.toast("保存成功", "success");
         document.querySelector(".modal-mask").remove();
         loadTags(); loadProblems();
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    // ---------- 管理员：多语言题面 ----------
+    // 翻译独立保存到 /problems/<id>/translations/<lang>，
+    // 不经过题目编辑接口，因此任何操作都不会改动顶层中文题面。
+    let trState = { id: "", lang: "en", base: null, translation: {}, exists: false };
+
+    function trSampleRows(samples) {
+      const list = (samples && samples.length)
+        ? samples
+        : [{ input: "", output: "" }];
+      return list.map(s => `
+        <div class="tr-case-row" style="display:grid;grid-template-columns:1fr 1fr 30px;gap:8px;margin-bottom:8px">
+          <textarea class="tr-s-in" rows="2" placeholder="样例输入（可留空回退中文）">${OJ.esc(s.input || "")}</textarea>
+          <textarea class="tr-s-out" rows="2" placeholder="样例输出（可留空回退中文）">${OJ.esc(s.output || "")}</textarea>
+          <button class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>
+        </div>`).join("");
+    }
+
+    // 按中文样例下标预填：同下标已有翻译就带入，没有则留空（前台该组回退中文）；
+    // 翻译里多出的组也保留，方便管理员继续编辑。
+    function prefillSampleRows(baseSamples, trSamples) {
+      const rows = [];
+      const n = Math.max((baseSamples || []).length, (trSamples || []).length);
+      for (let i = 0; i < n; i++) {
+        rows.push({
+          input: (trSamples[i] && trSamples[i].input) || "",
+          output: (trSamples[i] && trSamples[i].output) || "",
+        });
+      }
+      return trSampleRows(rows);
+    }
+
+    async function openTranslationForm(pid, lang) {
+      const useLang = lang || "en";
+      let data;
+      try {
+        data = await OJ.api("/problems/" + encodeURIComponent(pid) +
+                            "/translations/" + encodeURIComponent(useLang));
+      } catch (e) { OJ.toast(e.message, "error"); return; }
+
+      trState = {
+        id: pid, lang: useLang, base: data.base,
+        translation: data.translation || {}, exists: !!data.exists,
+      };
+      const tr = trState.translation;
+      const base = data.base || {};
+      const status = data.exists
+        ? '<span class="badge AC">已录入</span>'
+        : '<span class="badge gray">未录入（保存时新建）</span>';
+
+      const body = `
+        <div class="form-row">
+          <div class="form-group">
+            <label>语言版本</label>
+            <select id="tr_lang" onchange="switchTranslationLang(this.value)">
+              ${(await buildLangOptions(pid, useLang))}
+            </select>
+          </div>
+          <div class="form-group" style="display:flex;align-items:flex-end">${status}</div>
+        </div>
+        <div class="hint" style="margin-bottom:12px">
+          简体中文是默认题面，请在「编辑题目」中维护；这里只管理其它语言。留空的字段会在前台自动回退显示中文。
+        </div>
+        <div class="form-group"><label>标题 ${data.exists ? "" : "（可留空回退中文）"}</label>
+          <input id="tr_title" value="${OJ.esc(tr.title || "")}" placeholder="${OJ.esc(base.title || "")}"></div>
+        <div class="form-group"><label>题目描述</label>
+          <textarea id="tr_desc" rows="4" placeholder="${OJ.esc(base.description || "")}">${OJ.esc(tr.description || "")}</textarea></div>
+        <div class="form-row">
+          <div class="form-group"><label>输入描述</label>
+            <textarea id="tr_in" rows="3" placeholder="${OJ.esc(base.input_description || "")}">${OJ.esc(tr.input_description || "")}</textarea></div>
+          <div class="form-group"><label>输出描述</label>
+            <textarea id="tr_out" rows="3" placeholder="${OJ.esc(base.output_description || "")}">${OJ.esc(tr.output_description || "")}</textarea></div>
+        </div>
+        <div class="form-group"><label>提示</label>
+          <textarea id="tr_hint" rows="2" placeholder="${OJ.esc(base.hint || "")}">${OJ.esc(tr.hint || "")}</textarea></div>
+        <div class="card-title">样例（与中文样例按下标对齐，留空的组回退中文）
+          <button class="btn btn-outline btn-sm" onclick="addTrSampleRow()">＋ 添加</button></div>
+        <div id="trCaseList">${prefillSampleRows(base.samples, tr.samples)}</div>
+        <div class="card mt-16" style="background:var(--surface-2)">
+          <div class="card-title">中文题面（只读对照）</div>
+          <div class="muted" style="font-size:13px;white-space:pre-wrap">${OJ.esc(base.description || "")}</div>
+        </div>`;
+      // 切换语言时复用同一个弹窗，不堆叠
+      let mask = document.getElementById("trMask");
+      if (!mask) {
+        mask = OJ.openModal("🌐 多语言题面 · " + pid, body);
+        mask.id = "trMask";
+        mask.querySelector(".modal").style.maxWidth = "860px";
+      } else {
+        mask.querySelector("h3").textContent = "🌐 多语言题面 · " + pid;
+        mask.querySelector(".modal-body").innerHTML = body;
+      }
+      mask.querySelector(".modal-actions").innerHTML = `
+        <button class="btn btn-outline" onclick="this.closest('.modal-mask').remove()">关闭</button>
+        <button class="btn btn-danger" id="trDelBtn" onclick="deleteTranslation()" ${data.exists ? "" : "disabled"}>删除该语言版本</button>
+        <button class="btn btn-primary" onclick="saveTranslation()">保存</button>`;
+    }
+
+    async function buildLangOptions(pid, current) {
+      const LANGS = [
+        ["en", "English"], ["ja", "日本語"], ["ko", "한국어"],
+        ["fr", "Français"], ["ru", "Русский"], ["de", "Deutsch"], ["es", "Español"],
+      ];
+      let existsSet = new Set();
+      try {
+        const info = await OJ.api("/problems/" + encodeURIComponent(pid) + "/translations");
+        existsSet = new Set((info.items || []).filter(x => x.exists).map(x => x.lang));
+      } catch (e) {}
+      return LANGS.map(([code, name]) =>
+        `<option value="${code}" ${code === current ? "selected" : ""}>${name}${existsSet.has(code) ? " · 已录入" : ""}</option>`
+      ).join("");
+    }
+
+    function switchTranslationLang(lang) {
+      // 切换语言即重新拉取对应版本（不自动保存当前修改，避免误覆盖）
+      openTranslationForm(trState.id, lang);
+    }
+
+    function addTrSampleRow() {
+      const div = document.createElement("div");
+      div.className = "tr-case-row";
+      div.style.cssText = "display:grid;grid-template-columns:1fr 1fr 30px;gap:8px;margin-bottom:8px";
+      div.innerHTML = `<textarea class="tr-s-in" rows="2" placeholder="样例输入"></textarea>
+        <textarea class="tr-s-out" rows="2" placeholder="样例输出"></textarea>
+        <button class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">×</button>`;
+      OJ.el("trCaseList").appendChild(div);
+    }
+
+    function collectTranslationBody() {
+      const samples = [...document.querySelectorAll("#trCaseList .tr-case-row")].map(r => ({
+        input: r.querySelector(".tr-s-in").value,
+        output: r.querySelector(".tr-s-out").value,
+      })).filter(s => s.input.trim() || s.output.trim());
+      return {
+        title: OJ.el("tr_title").value,
+        description: OJ.el("tr_desc").value,
+        input_description: OJ.el("tr_in").value,
+        output_description: OJ.el("tr_out").value,
+        hint: OJ.el("tr_hint").value,
+        samples,
+      };
+    }
+
+    async function saveTranslation() {
+      const body = collectTranslationBody();
+      const lang = OJ.el("tr_lang").value;
+      try {
+        await OJ.api("/problems/" + encodeURIComponent(trState.id) +
+                    "/translations/" + encodeURIComponent(lang),
+                    { method: "PUT", body });
+        OJ.toast("多语言题面已保存", "success");
+        openTranslationForm(trState.id, lang);
+      } catch (e) { OJ.toast(e.message, "error"); }
+    }
+
+    async function deleteTranslation() {
+      const lang = OJ.el("tr_lang").value;
+      if (!await OJ.confirmDialog("确定删除该题的「" + lang.toUpperCase() + "」题面？中文题面不受影响。")) return;
+      try {
+        await OJ.api("/problems/" + encodeURIComponent(trState.id) +
+                    "/translations/" + encodeURIComponent(lang), { method: "DELETE" });
+        OJ.toast("已删除该语言版本", "success");
+        openTranslationForm(trState.id, lang);
       } catch (e) { OJ.toast(e.message, "error"); }
     }
 

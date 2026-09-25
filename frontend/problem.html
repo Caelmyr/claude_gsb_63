@@ -16,74 +16,170 @@
   <script src="/assets/app.js"></script>
   <script>
     OJ.boot("index");
-    const pid = new URLSearchParams(location.search).get("id");
+    const params = new URLSearchParams(location.search);
+    const pid = params.get("id");
+    const contestId = params.get("c") || "";
+    const LANG_KEY = "oj_problem_lang";
 
-    function renderMarkdownish(text) {
+    // 界面外壳文案：非中文一律使用英文外壳，保证海外用户可用
+    const UI = {
+      zh: {
+        timeLimit: "时间限制", memLimit: "内存限制", points: "分值",
+        submit: "✏️ 提交代码", back: "← 返回列表", discuss: "💬 讨论该题",
+        description: "题目描述", input: "输入描述", output: "输出描述",
+        samples: "样例", sampleN: (i) => "样例 " + (i + 1), sampleOut: "输出",
+        hint: "提示", tags: "标签", none: "（无）",
+        language: "题面语言：",
+        fallbackFull: (name) => `⚠️ 本题暂无${name}题面，已为你显示默认中文题面。`,
+        fallbackPartial: (name) => `⚠️ 本题的${name}题面尚不完整，缺失部分已显示中文内容。`,
+        invalid: (code) => `⚠️ 不支持的语言「${OJ.esc(code)}」，已显示默认中文题面。`,
+        missingParam: "缺少题目参数", loading: "加载题目…",
+      },
+      en: {
+        timeLimit: "Time", memLimit: "Memory", points: "Points",
+        submit: "✏️ Submit", back: "← Back to list", discuss: "💬 Discuss",
+        description: "Description", input: "Input", output: "Output",
+        samples: "Examples", sampleN: (i) => "Example " + (i + 1), sampleOut: "Output",
+        hint: "Hint", tags: "Tags", none: "(none)",
+        language: "Statement language:",
+        fallbackFull: (name) => `⚠️ The ${name} statement is not available yet. Showing the default Chinese statement.`,
+        fallbackPartial: (name) => `⚠️ The ${name} statement is incomplete. Missing parts are shown in Chinese.`,
+        invalid: (code) => `⚠️ Unsupported language "${code}". Showing the default Chinese statement.`,
+        missingParam: "Missing problem id", loading: "Loading problem…",
+      },
+    };
+    const t = (lang) => (lang === "zh" ? UI.zh : UI.en);
+
+    function renderMarkdownish(text, noneLabel) {
       // 简单段落化：空行分段，保留行内 code
-      if (!text) return '<span class="muted">（无）</span>';
+      if (!text) return `<span class="muted">${noneLabel}</span>`;
       const esc = OJ.esc;
-      const paras = text.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`).join("");
-      return paras;
+      return text.split(/\n{2,}/).map(p => `<p>${esc(p).replace(/\n/g, "<br>")}</p>`).join("");
+    }
+
+    function langName(entry, uiLang) {
+      // 中文界面展示中文名，其余界面展示英文名
+      return uiLang === "zh" ? entry.name : entry.en_name;
+    }
+
+    function buildUrl(lang) {
+      const q = new URLSearchParams();
+      q.set("id", pid);
+      if (contestId) q.set("c", contestId);
+      if (lang && lang !== "zh") q.set("lang", lang);
+      return "/problem.html?" + q.toString();
+    }
+
+    function switchLang(lang) {
+      try { localStorage.setItem(LANG_KEY, lang); } catch (e) {}
+      location.href = buildUrl(lang);
     }
 
     async function load() {
       if (!pid) { OJ.el("problemBody").innerHTML = '<div class="empty">缺少题目参数</div>'; return; }
       const box = OJ.el("problemBody");
       box.innerHTML = '<div class="empty"><span class="spinner"></span> 加载题目…</div>';
+
+      // 默认中文：URL 参数优先，其次本地记忆，最后 zh
+      let lang = params.get("lang") || "";
+      if (!lang) {
+        try { lang = localStorage.getItem(LANG_KEY) || "zh"; } catch (e) { lang = "zh"; }
+      }
+      const chrome = lang === "zh" ? "zh" : "en";
+      const L = t(chrome);
+
       try {
-        const p = await OJ.api("/problems/" + pid);
+        const p = await OJ.api("/problems/" + encodeURIComponent(pid) + "?lang=" + encodeURIComponent(lang));
+        const meta = p.lang || {};
+        const displayed = meta.displayed_lang || "zh";
+        const LL = t(displayed === "zh" ? "zh" : "en");
+        const supported = meta.supported_langs || [{ code: "zh", name: "简体中文", en_name: "Chinese" }];
+        const available = new Set(meta.available_langs || ["zh"]);
+
+        const switcher = `
+          <div class="lang-bar">
+            <span class="lang-label">${LL.language}</span>
+            <span class="lang-switch">
+              ${supported.map(s => `
+                <button class="${s.code === displayed ? "active" : ""}"
+                        onclick="switchLang('${OJ.esc(s.code)}')"
+                        title="${available.has(s.code) ? "" : "未录入 / Not available"}">
+                  ${OJ.esc(chrome === "zh" ? s.name : s.en_name)}${available.has(s.code) || s.code === "zh" ? "" : "○"}
+                </button>`).join("")}
+            </span>
+          </div>`;
+
+        // 回退提示：不支持的语言码 / 整份回退 / 部分字段回退
+        // 提示文案用「用户请求的语言」渲染，保证海外用户回退到中文时仍读得懂
+        let notice = "";
+        const shownEntry = supported.find(s => s.code === (meta.requested_lang || displayed));
+        const reqName = shownEntry ? langName(shownEntry, chrome) : (meta.requested_lang || "");
+        if (meta.invalid_lang) {
+          notice = `<div class="lang-notice">${L.invalid(meta.requested_lang || lang)}</div>`;
+        } else if (meta.fallback && displayed === "zh" && meta.requested_lang !== "zh") {
+          notice = `<div class="lang-notice">${L.fallbackFull(reqName)}</div>`;
+        } else if (meta.fallback) {
+          notice = `<div class="lang-notice">${L.fallbackPartial(reqName)}</div>`;
+        }
+
         const samples = (p.samples || []).map((s, i) => `
           <div class="form-group">
-            <label>样例 ${i + 1}</label>
+            <label>${LL.sampleN(i)}</label>
             <pre class="code light">${OJ.esc(s.input)}</pre>
-            <label class="mt-8">输出</label>
+            <label class="mt-8">${LL.sampleOut}</label>
             <pre class="code light">${OJ.esc(s.output)}</pre>
           </div>`).join("");
 
+        const extra = contestId ? `&c=${encodeURIComponent(contestId)}` : "";
+
         box.innerHTML = `
+          ${switcher}
+          ${notice}
           <div class="page-head">
             <div>
               <h1>${OJ.esc(p.title)} ${OJ.difficultyLabel(p.difficulty)}</h1>
               <div class="sub">
-                时间限制 <b>${p.time_limit_ms} ms</b> · 内存限制 <b>${Math.round(p.memory_limit_kb / 1024)} MB</b> · 分值 <b>${p.points}</b>
+                ${LL.timeLimit} <b>${p.time_limit_ms} ms</b> · ${LL.memLimit} <b>${Math.round(p.memory_limit_kb / 1024)} MB</b> · ${LL.points} <b>${p.points}</b>
               </div>
             </div>
-            <button class="btn btn-primary btn-lg" onclick="location.href='/editor.html?id=${OJ.esc(p.id)}'">✏️ 提交代码</button>
+            <button class="btn btn-primary btn-lg" onclick="location.href='/editor.html?id=${OJ.esc(p.id)}${extra}'">${LL.submit}</button>
           </div>
 
           <div class="card">
-            <div class="card-title">题目描述</div>
-            ${renderMarkdownish(p.description)}
+            <div class="card-title">${LL.description}</div>
+            ${renderMarkdownish(p.description, LL.none)}
           </div>
 
           <div class="card">
-            <div class="card-title">输入描述</div>
-            ${renderMarkdownish(p.input_description)}
+            <div class="card-title">${LL.input}</div>
+            ${renderMarkdownish(p.input_description, LL.none)}
           </div>
 
           <div class="card">
-            <div class="card-title">输出描述</div>
-            ${renderMarkdownish(p.output_description)}
+            <div class="card-title">${LL.output}</div>
+            ${renderMarkdownish(p.output_description, LL.none)}
           </div>
 
           <div class="card">
-            <div class="card-title">样例</div>
+            <div class="card-title">${LL.samples}</div>
             ${samples}
           </div>
 
-          ${p.hint ? `<div class="card"><div class="card-title">提示</div>${renderMarkdownish(p.hint)}</div>` : ""}
+          ${p.hint ? `<div class="card"><div class="card-title">${LL.hint}</div>${renderMarkdownish(p.hint, LL.none)}</div>` : ""}
 
           <div class="card">
-            <div class="card-title">标签</div>
-            <div>${(p.tags || []).map(t => `<span class="tag">${OJ.esc(t)}</span>`).join("")}</div>
+            <div class="card-title">${LL.tags}</div>
+            <div>${(p.tags || []).map(tg => `<span class="tag">${OJ.esc(tg)}</span>`).join("") || `<span class="muted">${LL.none}</span>`}</div>
           </div>
 
           <div class="flex gap-8 wrap">
-            <button class="btn btn-outline" onclick="history.back()">← 返回列表</button>
-            <a class="btn btn-outline" href="/forum.html?problem_id=${OJ.esc(p.id)}">💬 讨论该题</a>
+            <button class="btn btn-outline" onclick="history.back()">${LL.back}</button>
+            <a class="btn btn-outline" href="/forum.html?problem_id=${OJ.esc(p.id)}">${LL.discuss}</a>
           </div>`;
       } catch (e) {
-        box.innerHTML = `<div class="empty">${OJ.esc(e.message)}</div>`;
+        // 任何异常都不能让页面打不开：给出可返回的兜底
+        box.innerHTML = `<div class="empty">${OJ.esc(e.message)}</div>
+          <div class="text-center"><a class="btn btn-outline" href="/index.html">← 返回列表</a></div>`;
       }
     }
     load();
